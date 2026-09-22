@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>KOGA Live Translator (Ver.0)</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="KOGA Ver.0">
+<style>
+  :root{
+    --bg:#f7f7f5; --fg:#14181a; --muted:#6b7378; --border:#d9dcdd;
+    --panel:#ffffff; --accent:#0f6e5c; --accent-fg:#ffffff; --danger:#a6321f;
+    --interim:#8a9096; --log-bg:#eef0ef;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#101314; --fg:#eef1f0; --muted:#8b9296; --border:#2b3133;
+      --panel:#171b1c; --accent:#37b897; --accent-fg:#08211b; --danger:#e0685a;
+      --interim:#7d8589; --log-bg:#1b2021;
+    }
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;height:100%;background:var(--bg);color:var(--fg);}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Segoe UI",sans-serif;
+    display:flex;flex-direction:column;height:100%;
+    padding-top:env(safe-area-inset-top,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  header{padding:14px 18px 10px;border-bottom:1px solid var(--border);}
+  h1{font-size:17px;margin:0;font-weight:600;letter-spacing:0.01em;}
+  .modeLabel{font-size:12px;color:var(--muted);margin-top:3px;}
+  .controls{padding:12px 18px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+  button{
+    font-size:16px;padding:11px 20px;border-radius:10px;border:1px solid var(--border);
+    background:var(--panel);color:var(--fg);
+  }
+  button:active{transform:scale(0.98);}
+  button:disabled{opacity:0.4;}
+  #startBtn{background:var(--accent);color:var(--accent-fg);border-color:var(--accent);font-weight:600;}
+  #stopBtn{background:var(--panel);color:var(--danger);border-color:var(--danger);}
+  .langRow{padding:0 18px 12px;display:flex;gap:8px;align-items:center;font-size:13px;color:var(--muted);}
+  .langBtn{font-size:14px;padding:8px 14px;border-radius:8px;}
+  .langBtn.active{background:var(--accent);color:var(--accent-fg);border-color:var(--accent);font-weight:600;}
+  .langNote{padding:0 18px 10px;font-size:12px;color:var(--muted);}
+  .meterWrap{margin:0 18px 12px;height:6px;background:var(--border);border-radius:3px;overflow:hidden;}
+  .meter{height:100%;width:0%;background:var(--accent);}
+  .statusGrid{
+    padding:10px 18px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);
+    display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;font-size:12px;color:var(--muted);
+    background:var(--panel);
+  }
+  .statusGrid b{color:var(--fg);}
+  #transcript{
+    flex:1;overflow-y:auto;padding:18px;font-size:21px;line-height:1.6;
+    -webkit-overflow-scrolling:touch;
+  }
+  .final{color:var(--fg);}
+  .interim{color:var(--interim);font-style:italic;}
+  #log{
+    height:110px;overflow-y:auto;border-top:1px solid var(--border);
+    padding:8px 18px;font-size:11px;line-height:1.5;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    color:var(--muted);background:var(--log-bg);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>KOGA Live Translator — Ver.0（実機検証用）</h1>
+  <div class="modeLabel" id="modeLabel">モード判定中…</div>
+</header>
+
+<div class="controls">
+  <button id="startBtn">開始</button>
+  <button id="stopBtn" disabled>停止</button>
+</div>
+
+<div class="langRow">
+  言語:
+  <button class="langBtn active" data-lang="auto">AUTO</button>
+  <button class="langBtn" data-lang="en-US">EN</button>
+  <button class="langBtn" data-lang="es-ES">ES</button>
+</div>
+<div class="langNote">※ AUTOは現時点では英語（en-US）として扱います。真の自動判定はVer.1（Whisper導入時）で実装します。話者が変わったらEN/ESを手動で切り替えてください。</div>
+
+<div class="meterWrap"><div class="meter" id="meter"></div></div>
+
+<div class="statusGrid">
+  <div>状態: <b id="stateText">停止中</b></div>
+  <div>経過時間: <b id="elapsed">00:00</b></div>
+  <div>自動再起動回数: <b id="restartCount">0</b></div>
+  <div>最終認識時刻: <b id="lastResultTime">-</b></div>
+  <div>WakeLock: <b id="wakeLockStatus">-</b></div>
+  <div>画面表示状態: <b id="visState">visible</b></div>
+</div>
+
+<div id="transcript"><span class="interim" id="placeholder">「開始」を押し、マイクの使用を許可してください。</span></div>
+
+<div id="log"></div>
+
+<script>
+(function(){
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const langBtns = document.querySelectorAll('.langBtn');
+  const transcriptEl = document.getElementById('transcript');
+  const stateText = document.getElementById('stateText');
+  const elapsedEl = document.getElementById('elapsed');
+  const restartCountEl = document.getElementById('restartCount');
+  const lastResultTimeEl = document.getElementById('lastResultTime');
+  const wakeLockStatusEl = document.getElementById('wakeLockStatus');
+  const visStateEl = document.getElementById('visState');
+  const modeLabel = document.getElementById('modeLabel');
+  const meterEl = document.getElementById('meter');
+  const logEl = document.getElementById('log');
+
+  let recognition = null;
+  let shouldBeRunning = false;
+  let restartCount = 0;
+  let startTime = null;
+  let timerInterval = null;
+  let watchdogInterval = null;
+  let currentLang = 'en-US';
+  let wakeLock = null;
+  let audioCtx = null, analyser = null, micStream = null, meterRAF = null;
+  let interimSpan = null;
+  let lastEventTime = Date.now();
+
+  function log(msg){
+    const t = new Date().toLocaleTimeString('ja-JP', {hour12:false});
+    const line = document.createElement('div');
+    line.textContent = '[' + t + '] ' + msg;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function fmtElapsed(ms){
+    const s = Math.floor(ms/1000);
+    const mm = String(Math.floor(s/60)).padStart(2,'0');
+    const ss = String(s%60).padStart(2,'0');
+    return mm+':'+ss;
+  }
+
+  modeLabel.textContent = (window.navigator.standalone === true)
+    ? 'モード: ホーム画面PWA（standalone）'
+    : 'モード: Safari通常タブ';
+
+  const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognitionCtor){
+    transcriptEl.textContent = 'このブラウザは音声認識(SpeechRecognition)に対応していません。';
+    startBtn.disabled = true;
+  }
+
+  function createRecognition(){
+    const r = new SpeechRecognitionCtor();
+    r.continuous = true;
+    r.interimResults = true;
+    r.lang = currentLang;
+    r.onstart = function(){
+      lastEventTime = Date.now();
+      stateText.textContent = '認識中';
+      log('recognition started (lang=' + currentLang + ')');
+    };
+    r.onresult = function(e){
+      lastEventTime = Date.now();
+      let finalText = '';
+      let interimText = '';
+      for (let i = e.resultIndex; i < e.results.length; i++){
+        const res = e.results[i];
+        if (res.isFinal) finalText += res[0].transcript;
+        else interimText += res[0].transcript;
+      }
+      if (finalText){
+        appendFinal(finalText);
+        lastResultTimeEl.textContent = new Date().toLocaleTimeString('ja-JP', {hour12:false});
+      }
+      setInterim(interimText);
+    };
+    r.onerror = function(e){
+      lastEventTime = Date.now();
+      log('error: ' + e.error);
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+        shouldBeRunning = false;
+        stateText.textContent = 'マイク許可がありません';
+      } else {
+        stateText.textContent = 'エラー(' + e.error + ') → 再起動待ち';
+      }
+    };
+    r.onend = function(){
+      lastEventTime = Date.now();
+      log('recognition ended');
+      if (shouldBeRunning){
+        restartCount++;
+        restartCountEl.textContent = restartCount;
+        setTimeout(function(){
+          if (shouldBeRunning){
+            try { recognition.start(); }
+            catch(err){ log('restart failed: ' + err.message); }
+          }
+        }, 300);
+      } else {
+        stateText.textContent = '停止中';
+      }
+    };
+    return r;
+  }
+
+  function appendFinal(text){
+    const ph = document.getElementById('placeholder');
+    if (ph) transcriptEl.innerHTML = '';
+    interimSpan = null;
+    const span = document.createElement('span');
+    span.className = 'final';
+    span.textContent = text + ' ';
+    transcriptEl.appendChild(span);
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  }
+
+  function setInterim(text){
+    if (!interimSpan){
+      interimSpan = document.createElement('span');
+      interimSpan.className = 'interim';
+      transcriptEl.appendChild(interimSpan);
+    }
+    interimSpan.textContent = text;
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  }
+
+  async function startMeter(){
+    try{
+      micStream = await navigator.mediaDevices.getUserMedia({audio:true});
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(micStream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      function tick(){
+        analyser.getByteFrequencyData(data);
+        let sum = 0;
+        for (let i=0;i<data.length;i++) sum += data[i];
+        const avg = sum / data.length;
+        meterEl.style.width = Math.min(100, avg*1.6) + '%';
+        meterRAF = requestAnimationFrame(tick);
+      }
+      tick();
+      log('mic level meter started');
+    } catch(err){
+      log('mic meter failed: ' + err.message);
+    }
+  }
+
+  function stopMeter(){
+    if (meterRAF) cancelAnimationFrame(meterRAF);
+    if (micStream) micStream.getTracks().forEach(t => t.stop());
+    if (audioCtx) audioCtx.close();
+    meterEl.style.width = '0%';
+  }
+
+  async function requestWakeLock(){
+    try{
+      if ('wakeLock' in navigator){
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLockStatusEl.textContent = '有効';
+        log('wake lock acquired');
+        wakeLock.addEventListener('release', function(){
+          wakeLockStatusEl.textContent = '解除された';
+          log('wake lock released');
+        });
+      } else {
+        wakeLockStatusEl.textContent = '非対応';
+        log('wake lock API not supported on this browser');
+      }
+    } catch(err){
+      wakeLockStatusEl.textContent = '失敗:' + err.message;
+      log('wake lock failed: ' + err.message);
+    }
+  }
+
+  document.addEventListener('visibilitychange', function(){
+    visStateEl.textContent = document.visibilityState;
+    log('visibility changed: ' + document.visibilityState);
+    if (document.visibilityState === 'visible' && shouldBeRunning && !wakeLock){
+      requestWakeLock();
+    }
+  });
+
+  // 無音・スタック検知ウォッチドッグ：45秒間イベントが一切無ければ強制再起動
+  watchdogInterval = setInterval(function(){
+    if (shouldBeRunning && (Date.now() - lastEventTime > 45000)){
+      log('watchdog: 45秒間イベントなし → 強制再起動');
+      lastEventTime = Date.now();
+      try { recognition.stop(); } catch(e){}
+      try { recognition.abort(); } catch(e){}
+      setTimeout(function(){
+        if (shouldBeRunning){
+          try {
+            recognition = createRecognition();
+            recognition.start();
+          } catch(err){ log('watchdog restart failed: ' + err.message); }
+        }
+      }, 500);
+    }
+  }, 5000);
+
+  startBtn.addEventListener('click', async function(){
+    shouldBeRunning = true;
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    startTime = Date.now();
+    lastEventTime = Date.now();
+    restartCount = 0;
+    restartCountEl.textContent = '0';
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = setInterval(function(){
+      elapsedEl.textContent = fmtElapsed(Date.now() - startTime);
+    }, 1000);
+    await startMeter();
+    await requestWakeLock();
+    recognition = createRecognition();
+    try { recognition.start(); }
+    catch(err){ log('initial start failed: ' + err.message); }
+  });
+
+  stopBtn.addEventListener('click', function(){
+    shouldBeRunning = false;
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    if (recognition){ try { recognition.stop(); } catch(e){} }
+    if (timerInterval) clearInterval(timerInterval);
+    stopMeter();
+    if (wakeLock){ wakeLock.release().catch(function(){}); wakeLock = null; wakeLockStatusEl.textContent='-'; }
+    stateText.textContent = '停止中';
+    log('stopped by user');
+  });
+
+  langBtns.forEach(function(btn){
+    btn.addEventListener('click', function(){
+      langBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const lang = btn.dataset.lang;
+      currentLang = (lang === 'auto') ? 'en-US' : lang;
+      log('language switched to ' + currentLang);
+      if (recognition) recognition.lang = currentLang;
+      if (shouldBeRunning && recognition){
+        try { recognition.stop(); } catch(e){}
+        // 再起動は既存の onend ハンドラが自動的に行う
+      }
+    });
+  });
+})();
+</script>
+</body>
+</html>
