@@ -3,22 +3,22 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>KOGA Live Translator (Ver.0)</title>
+<title>KOGA Live Translator (Ver.1a)</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="KOGA Ver.0">
+<meta name="apple-mobile-web-app-title" content="KOGA Ver.1a">
 <style>
   :root{
     --bg:#f7f7f5; --fg:#14181a; --muted:#6b7378; --border:#d9dcdd;
     --panel:#ffffff; --accent:#0f6e5c; --accent-fg:#ffffff; --danger:#a6321f;
-    --interim:#8a9096; --log-bg:#eef0ef;
+    --log-bg:#eef0ef;
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
       --bg:#101314; --fg:#eef1f0; --muted:#8b9296; --border:#2b3133;
       --panel:#171b1c; --accent:#37b897; --accent-fg:#08211b; --danger:#e0685a;
-      --interim:#7d8589; --log-bg:#1b2021;
+      --log-bg:#1b2021;
     }
   }
   *{box-sizing:border-box;}
@@ -44,9 +44,10 @@
   .langRow{padding:0 18px 12px;display:flex;gap:8px;align-items:center;font-size:13px;color:var(--muted);}
   .langBtn{font-size:14px;padding:8px 14px;border-radius:8px;}
   .langBtn.active{background:var(--accent);color:var(--accent-fg);border-color:var(--accent);font-weight:600;}
-  .langNote{padding:0 18px 10px;font-size:12px;color:var(--muted);}
+  .noteText{padding:0 18px 10px;font-size:12px;color:var(--muted);}
   .meterWrap{margin:0 18px 12px;height:6px;background:var(--border);border-radius:3px;overflow:hidden;}
   .meter{height:100%;width:0%;background:var(--accent);}
+  .modelStatus{padding:0 18px 10px;font-size:12px;color:var(--muted);}
   .statusGrid{
     padding:10px 18px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);
     display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;font-size:12px;color:var(--muted);
@@ -58,7 +59,6 @@
     -webkit-overflow-scrolling:touch;
   }
   .final{color:var(--fg);}
-  .interim{color:var(--interim);font-style:italic;}
   #log{
     height:110px;overflow-y:auto;border-top:1px solid var(--border);
     padding:8px 18px;font-size:11px;line-height:1.5;
@@ -70,7 +70,7 @@
 <body>
 
 <header>
-  <h1>KOGA Live Translator — Ver.0（実機検証用）</h1>
+  <h1>KOGA Live Translator — Ver.1a（Whisper検証用）</h1>
   <div class="modeLabel" id="modeLabel">モード判定中…</div>
 </header>
 
@@ -82,280 +82,301 @@
 <div class="langRow">
   言語:
   <button class="langBtn active" data-lang="auto">AUTO</button>
-  <button class="langBtn" data-lang="en-US">EN</button>
-  <button class="langBtn" data-lang="es-ES">ES</button>
+  <button class="langBtn" data-lang="en">EN</button>
+  <button class="langBtn" data-lang="es">ES</button>
 </div>
-<div class="langNote">※ AUTOは現時点では英語（en-US）として扱います。真の自動判定はVer.1（Whisper導入時）で実装します。話者が変わったらEN/ESを手動で切り替えてください。</div>
+<div class="noteText">※ AUTOはWhisperが発話ごとに言語を自動判定します（Ver.0のような固定ではありません）。EN/ESを選ぶとその言語専用になり、判定の手間がない分、速く・安定しやすくなります。</div>
+<div class="noteText">※ 字幕はひと区切り話し終えてから数秒後にまとめて表示されます（単語ごとのリアルタイム表示ではありません）。</div>
 
 <div class="meterWrap"><div class="meter" id="meter"></div></div>
+<div class="modelStatus">モデル: <span id="modelStatusText">未読み込み（開始を押すとダウンロードされます）</span></div>
 
 <div class="statusGrid">
   <div>状態: <b id="stateText">停止中</b></div>
   <div>経過時間: <b id="elapsed">00:00</b></div>
-  <div>自動再起動回数: <b id="restartCount">0</b></div>
+  <div>処理済みチャンク数: <b id="chunkCount">0</b></div>
   <div>最終認識時刻: <b id="lastResultTime">-</b></div>
   <div>WakeLock: <b id="wakeLockStatus">-</b></div>
   <div>画面表示状態: <b id="visState">visible</b></div>
 </div>
 
-<div id="transcript"><span class="interim" id="placeholder">「開始」を押し、マイクの使用を許可してください。</span></div>
+<div id="transcript"><span class="noteText" id="placeholder">「開始」を押し、マイクの使用を許可してください。初回はモデルのダウンロードが入ります。</span></div>
 
 <div id="log"></div>
 
-<script>
-(function(){
-  const startBtn = document.getElementById('startBtn');
-  const stopBtn = document.getElementById('stopBtn');
-  const langBtns = document.querySelectorAll('.langBtn');
-  const transcriptEl = document.getElementById('transcript');
-  const stateText = document.getElementById('stateText');
-  const elapsedEl = document.getElementById('elapsed');
-  const restartCountEl = document.getElementById('restartCount');
-  const lastResultTimeEl = document.getElementById('lastResultTime');
-  const wakeLockStatusEl = document.getElementById('wakeLockStatus');
-  const visStateEl = document.getElementById('visState');
-  const modeLabel = document.getElementById('modeLabel');
-  const meterEl = document.getElementById('meter');
-  const logEl = document.getElementById('log');
+<script type="module">
+import { pipeline } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
 
-  let recognition = null;
-  let shouldBeRunning = false;
-  let restartCount = 0;
-  let startTime = null;
-  let timerInterval = null;
-  let watchdogInterval = null;
-  let currentLang = 'en-US';
-  let wakeLock = null;
-  let audioCtx = null, analyser = null, micStream = null, meterRAF = null;
-  let interimSpan = null;
-  let lastEventTime = Date.now();
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const langBtns = document.querySelectorAll('.langBtn');
+const transcriptEl = document.getElementById('transcript');
+const stateText = document.getElementById('stateText');
+const elapsedEl = document.getElementById('elapsed');
+const chunkCountEl = document.getElementById('chunkCount');
+const lastResultTimeEl = document.getElementById('lastResultTime');
+const wakeLockStatusEl = document.getElementById('wakeLockStatus');
+const visStateEl = document.getElementById('visState');
+const modeLabel = document.getElementById('modeLabel');
+const meterEl = document.getElementById('meter');
+const logEl = document.getElementById('log');
+const modelStatusText = document.getElementById('modelStatusText');
 
-  function log(msg){
-    const t = new Date().toLocaleTimeString('ja-JP', {hour12:false});
-    const line = document.createElement('div');
-    line.textContent = '[' + t + '] ' + msg;
-    logEl.appendChild(line);
-    logEl.scrollTop = logEl.scrollHeight;
+let transcriber = null;
+let modelLoaded = false;
+let shouldBeRunning = false;
+let startTime = null;
+let timerInterval = null;
+let currentLang = 'auto';
+let wakeLock = null;
+let chunkCount = 0;
+
+let audioCtx = null, analyser = null, micStream = null, processorNode = null;
+let sourceSampleRate = 48000;
+const TARGET_SR = 16000;
+let currentBuffer = [];
+let currentBufferSamples = 0;
+let processingQueue = [];
+let isProcessingQueue = false;
+let lastVoiceTime = 0;
+const SILENCE_THRESHOLD = 10;
+const SILENCE_HOLD_MS = 700;
+const MIN_CHUNK_SAMPLES = TARGET_SR * 1;
+const MAX_CHUNK_SAMPLES = TARGET_SR * 12;
+
+function log(msg){
+  const t = new Date().toLocaleTimeString('ja-JP', {hour12:false});
+  const line = document.createElement('div');
+  line.textContent = '[' + t + '] ' + msg;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function fmtElapsed(ms){
+  const s = Math.floor(ms/1000);
+  const mm = String(Math.floor(s/60)).padStart(2,'0');
+  const ss = String(s%60).padStart(2,'0');
+  return mm+':'+ss;
+}
+
+function updateModelStatus(msg){ modelStatusText.textContent = msg; }
+
+modeLabel.textContent = (window.navigator.standalone === true)
+  ? 'モード: ホーム画面PWA（standalone）'
+  : 'モード: Safari通常タブ';
+
+function resampleTo16k(input, inputRate){
+  if (inputRate === TARGET_SR) return input;
+  const ratio = inputRate / TARGET_SR;
+  const outLength = Math.floor(input.length / ratio);
+  const output = new Float32Array(outLength);
+  for (let i = 0; i < outLength; i++){
+    const srcIndex = i * ratio;
+    const i0 = Math.floor(srcIndex);
+    const i1 = Math.min(i0 + 1, input.length - 1);
+    const frac = srcIndex - i0;
+    output[i] = input[i0] * (1 - frac) + input[i1] * frac;
   }
+  return output;
+}
 
-  function fmtElapsed(ms){
-    const s = Math.floor(ms/1000);
-    const mm = String(Math.floor(s/60)).padStart(2,'0');
-    const ss = String(s%60).padStart(2,'0');
-    return mm+':'+ss;
-  }
+function mergeBuffers(chunks, totalLen){
+  const result = new Float32Array(totalLen);
+  let offset = 0;
+  for (const c of chunks){ result.set(c, offset); offset += c.length; }
+  return result;
+}
 
-  modeLabel.textContent = (window.navigator.standalone === true)
-    ? 'モード: ホーム画面PWA（standalone）'
-    : 'モード: Safari通常タブ';
-
-  const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognitionCtor){
-    transcriptEl.textContent = 'このブラウザは音声認識(SpeechRecognition)に対応していません。';
-    startBtn.disabled = true;
-  }
-
-  function createRecognition(){
-    const r = new SpeechRecognitionCtor();
-    r.continuous = true;
-    r.interimResults = true;
-    r.lang = currentLang;
-    r.onstart = function(){
-      lastEventTime = Date.now();
-      stateText.textContent = '認識中';
-      log('recognition started (lang=' + currentLang + ')');
-    };
-    r.onresult = function(e){
-      lastEventTime = Date.now();
-      let finalText = '';
-      let interimText = '';
-      for (let i = e.resultIndex; i < e.results.length; i++){
-        const res = e.results[i];
-        if (res.isFinal) finalText += res[0].transcript;
-        else interimText += res[0].transcript;
+async function loadModel(){
+  updateModelStatus('モデルを読み込み中…(初回のみ、Wi-Fi推奨)');
+  transcriber = await pipeline('automatic-speech-recognition', 'onnx-community/whisper-tiny', {
+    progress_callback: function(p){
+      if (p.status === 'progress' && p.total){
+        const pct = Math.round((p.loaded / p.total) * 100);
+        updateModelStatus('モデル読込中 ' + pct + '%');
       }
-      if (finalText){
-        appendFinal(finalText);
+    }
+  });
+  modelLoaded = true;
+  updateModelStatus('準備完了');
+  log('model loaded');
+}
+
+function appendFinal(text){
+  const ph = document.getElementById('placeholder');
+  if (ph) transcriptEl.innerHTML = '';
+  const span = document.createElement('span');
+  span.className = 'final';
+  span.textContent = text + ' ';
+  transcriptEl.appendChild(span);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+function flushChunk(){
+  if (currentBufferSamples === 0) return;
+  const chunk = mergeBuffers(currentBuffer, currentBufferSamples);
+  currentBuffer = [];
+  currentBufferSamples = 0;
+  processingQueue.push(chunk);
+  log('chunk queued (' + (chunk.length / TARGET_SR).toFixed(1) + 's), queue=' + processingQueue.length);
+  processQueue();
+}
+
+async function processQueue(){
+  if (isProcessingQueue) return;
+  isProcessingQueue = true;
+  while (processingQueue.length > 0){
+    const chunk = processingQueue.shift();
+    stateText.textContent = '文字起こし中…（キュー' + processingQueue.length + '）';
+    try{
+      const options = { task: 'transcribe' };
+      if (currentLang !== 'auto') options.language = currentLang;
+      const result = await transcriber(chunk, options);
+      const text = (result && result.text) ? result.text.trim() : '';
+      if (text){
+        appendFinal(text);
+        chunkCount++;
+        chunkCountEl.textContent = chunkCount;
         lastResultTimeEl.textContent = new Date().toLocaleTimeString('ja-JP', {hour12:false});
       }
-      setInterim(interimText);
-    };
-    r.onerror = function(e){
-      lastEventTime = Date.now();
-      log('error: ' + e.error);
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed'){
-        shouldBeRunning = false;
-        stateText.textContent = 'マイク許可がありません';
-      } else {
-        stateText.textContent = 'エラー(' + e.error + ') → 再起動待ち';
-      }
-    };
-    r.onend = function(){
-      lastEventTime = Date.now();
-      log('recognition ended');
-      if (shouldBeRunning){
-        restartCount++;
-        restartCountEl.textContent = restartCount;
-        setTimeout(function(){
-          if (shouldBeRunning){
-            try { recognition.start(); }
-            catch(err){ log('restart failed: ' + err.message); }
-          }
-        }, 300);
-      } else {
-        stateText.textContent = '停止中';
-      }
-    };
-    return r;
-  }
-
-  function appendFinal(text){
-    const ph = document.getElementById('placeholder');
-    if (ph) transcriptEl.innerHTML = '';
-    if (interimSpan && interimSpan.parentNode){
-      interimSpan.parentNode.removeChild(interimSpan);
-    }
-    interimSpan = null;
-    const span = document.createElement('span');
-    span.className = 'final';
-    span.textContent = text + ' ';
-    transcriptEl.appendChild(span);
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
-  }
-
-  function setInterim(text){
-    if (!interimSpan){
-      interimSpan = document.createElement('span');
-      interimSpan.className = 'interim';
-      transcriptEl.appendChild(interimSpan);
-    }
-    interimSpan.textContent = text;
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
-  }
-
-  async function startMeter(){
-    try{
-      micStream = await navigator.mediaDevices.getUserMedia({audio:true});
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const source = audioCtx.createMediaStreamSource(micStream);
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 256;
-      source.connect(analyser);
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      function tick(){
-        analyser.getByteFrequencyData(data);
-        let sum = 0;
-        for (let i=0;i<data.length;i++) sum += data[i];
-        const avg = sum / data.length;
-        meterEl.style.width = Math.min(100, avg*1.6) + '%';
-        meterRAF = requestAnimationFrame(tick);
-      }
-      tick();
-      log('mic level meter started');
+      log('transcribed: "' + text.slice(0,30) + (text.length>30?'…':'') + '"');
     } catch(err){
-      log('mic meter failed: ' + err.message);
+      log('transcribe error: ' + err.message);
     }
   }
+  isProcessingQueue = false;
+  if (shouldBeRunning) stateText.textContent = '認識中（待機）';
+}
 
-  function stopMeter(){
-    if (meterRAF) cancelAnimationFrame(meterRAF);
-    if (micStream) micStream.getTracks().forEach(t => t.stop());
-    if (audioCtx) audioCtx.close();
-    meterEl.style.width = '0%';
-  }
-
-  async function requestWakeLock(){
-    try{
-      if ('wakeLock' in navigator){
-        wakeLock = await navigator.wakeLock.request('screen');
-        wakeLockStatusEl.textContent = '有効';
-        log('wake lock acquired');
-        wakeLock.addEventListener('release', function(){
-          wakeLockStatusEl.textContent = '解除された';
-          log('wake lock released');
-        });
-      } else {
-        wakeLockStatusEl.textContent = '非対応';
-        log('wake lock API not supported on this browser');
-      }
-    } catch(err){
-      wakeLockStatusEl.textContent = '失敗:' + err.message;
-      log('wake lock failed: ' + err.message);
+async function requestWakeLock(){
+  try{
+    if ('wakeLock' in navigator){
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLockStatusEl.textContent = '有効';
+      log('wake lock acquired');
+      wakeLock.addEventListener('release', function(){
+        wakeLockStatusEl.textContent = '解除された';
+        log('wake lock released');
+      });
+    } else {
+      wakeLockStatusEl.textContent = '非対応';
     }
+  } catch(err){
+    wakeLockStatusEl.textContent = '失敗:' + err.message;
+    log('wake lock failed: ' + err.message);
   }
+}
 
-  document.addEventListener('visibilitychange', function(){
-    visStateEl.textContent = document.visibilityState;
-    log('visibility changed: ' + document.visibilityState);
-    if (document.visibilityState === 'visible' && shouldBeRunning && !wakeLock){
-      requestWakeLock();
-    }
+document.addEventListener('visibilitychange', function(){
+  visStateEl.textContent = document.visibilityState;
+  log('visibility changed: ' + document.visibilityState);
+  if (document.visibilityState === 'visible' && shouldBeRunning && !wakeLock){
+    requestWakeLock();
+  }
+});
+
+async function startCapture(){
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true }
   });
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  sourceSampleRate = audioCtx.sampleRate;
+  const source = audioCtx.createMediaStreamSource(micStream);
 
-  // 無音・スタック検知ウォッチドッグ：45秒間イベントが一切無ければ強制再起動
-  watchdogInterval = setInterval(function(){
-    if (shouldBeRunning && (Date.now() - lastEventTime > 45000)){
-      log('watchdog: 45秒間イベントなし → 強制再起動');
-      lastEventTime = Date.now();
-      try { recognition.stop(); } catch(e){}
-      try { recognition.abort(); } catch(e){}
-      setTimeout(function(){
-        if (shouldBeRunning){
-          try {
-            recognition = createRecognition();
-            recognition.start();
-          } catch(err){ log('watchdog restart failed: ' + err.message); }
-        }
-      }, 500);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  source.connect(analyser);
+
+  processorNode = audioCtx.createScriptProcessor(4096, 1, 1);
+  source.connect(processorNode);
+  processorNode.connect(audioCtx.destination);
+  processorNode.onaudioprocess = function(e){
+    if (!shouldBeRunning) return;
+    const input = e.inputBuffer.getChannelData(0);
+    const resampled = resampleTo16k(input, sourceSampleRate);
+    currentBuffer.push(resampled);
+    currentBufferSamples += resampled.length;
+  };
+
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  lastVoiceTime = performance.now();
+  function meterTick(){
+    if (!shouldBeRunning) return;
+    analyser.getByteFrequencyData(data);
+    let sum = 0;
+    for (let i=0;i<data.length;i++) sum += data[i];
+    const avg = sum / data.length;
+    meterEl.style.width = Math.min(100, avg*1.6) + '%';
+
+    const now = performance.now();
+    if (avg > SILENCE_THRESHOLD) lastVoiceTime = now;
+    const silenceDuration = now - lastVoiceTime;
+
+    if (currentBufferSamples >= MIN_CHUNK_SAMPLES &&
+        (silenceDuration >= SILENCE_HOLD_MS || currentBufferSamples >= MAX_CHUNK_SAMPLES)){
+      flushChunk();
     }
-  }, 5000);
+    requestAnimationFrame(meterTick);
+  }
+  meterTick();
+}
 
-  startBtn.addEventListener('click', async function(){
-    shouldBeRunning = true;
-    startBtn.disabled = true;
-    stopBtn.disabled = false;
-    startTime = Date.now();
-    lastEventTime = Date.now();
-    restartCount = 0;
-    restartCountEl.textContent = '0';
-    if (timerInterval) clearInterval(timerInterval);
-    timerInterval = setInterval(function(){
-      elapsedEl.textContent = fmtElapsed(Date.now() - startTime);
-    }, 1000);
-    await startMeter();
+function stopCapture(){
+  flushChunk();
+  if (processorNode){ try{ processorNode.disconnect(); }catch(e){} }
+  if (analyser){ try{ analyser.disconnect(); }catch(e){} }
+  if (micStream) micStream.getTracks().forEach(function(t){ t.stop(); });
+  if (audioCtx){ try{ audioCtx.close(); }catch(e){} }
+  meterEl.style.width = '0%';
+}
+
+startBtn.addEventListener('click', async function(){
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  shouldBeRunning = true;
+  startTime = Date.now();
+  chunkCount = 0;
+  chunkCountEl.textContent = '0';
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = setInterval(function(){
+    elapsedEl.textContent = fmtElapsed(Date.now() - startTime);
+  }, 1000);
+
+  try{
+    if (!modelLoaded) await loadModel();
     await requestWakeLock();
-    recognition = createRecognition();
-    try { recognition.start(); }
-    catch(err){ log('initial start failed: ' + err.message); }
-  });
-
-  stopBtn.addEventListener('click', function(){
+    await startCapture();
+    stateText.textContent = '認識中（待機）';
+    log('capture started');
+  } catch(err){
+    log('start failed: ' + err.message);
+    stateText.textContent = '開始失敗: ' + err.message;
     shouldBeRunning = false;
     startBtn.disabled = false;
     stopBtn.disabled = true;
-    if (recognition){ try { recognition.stop(); } catch(e){} }
     if (timerInterval) clearInterval(timerInterval);
-    stopMeter();
-    if (wakeLock){ wakeLock.release().catch(function(){}); wakeLock = null; wakeLockStatusEl.textContent='-'; }
-    stateText.textContent = '停止中';
-    log('stopped by user');
-  });
+  }
+});
 
-  langBtns.forEach(function(btn){
-    btn.addEventListener('click', function(){
-      langBtns.forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      const lang = btn.dataset.lang;
-      currentLang = (lang === 'auto') ? 'en-US' : lang;
-      log('language switched to ' + currentLang);
-      if (recognition) recognition.lang = currentLang;
-      if (shouldBeRunning && recognition){
-        try { recognition.stop(); } catch(e){}
-        // 再起動は既存の onend ハンドラが自動的に行う
-      }
-    });
+stopBtn.addEventListener('click', function(){
+  shouldBeRunning = false;
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  stopCapture();
+  if (timerInterval) clearInterval(timerInterval);
+  if (wakeLock){ wakeLock.release().catch(function(){}); wakeLock = null; wakeLockStatusEl.textContent = '-'; }
+  stateText.textContent = '停止中';
+  log('stopped by user');
+});
+
+langBtns.forEach(function(btn){
+  btn.addEventListener('click', function(){
+    langBtns.forEach(function(b){ b.classList.remove('active'); });
+    btn.classList.add('active');
+    currentLang = btn.dataset.lang;
+    log('language set to ' + currentLang);
   });
-})();
+});
 </script>
 </body>
 </html>
