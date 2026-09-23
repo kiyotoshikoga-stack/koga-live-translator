@@ -212,6 +212,9 @@
   function appendFinal(text){
     const ph = document.getElementById('placeholder');
     if (ph) transcriptEl.innerHTML = '';
+    if (interimSpan && interimSpan.parentNode){
+      interimSpan.parentNode.removeChild(interimSpan);
+    }
     interimSpan = null;
     const span = document.createElement('span');
     span.className = 'final';
