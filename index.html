@@ -85,8 +85,8 @@
   <button class="langBtn" data-lang="en">EN</button>
   <button class="langBtn" data-lang="es">ES</button>
 </div>
-<div class="noteText">※ AUTOはWhisperが発話ごとに言語を自動判定します（Ver.0のような固定ではありません）。EN/ESを選ぶとその言語専用になり、判定の手間がない分、速く・安定しやすくなります。</div>
-<div class="noteText">※ 字幕はひと区切り話し終えてから数秒後にまとめて表示されます（単語ごとのリアルタイム表示ではありません）。</div>
+<div class="noteText">※ AUTOはWhisperが発話ごとに言語を自動判定します。EN/ESを選ぶとその言語専用になり、判定の手間がない分、速く・安定しやすくなります。</div>
+<div class="noteText">※ 字幕はひと区切り話し終えてから数秒後にまとめて表示されます（単語ごとのリアルタイム表示ではありません）。無音・環境音だけの区間は表示されません。</div>
 
 <div class="meterWrap"><div class="meter" id="meter"></div></div>
 <div class="modelStatus">モデル: <span id="modelStatusText">未読み込み（開始を押すとダウンロードされます）</span></div>
@@ -136,12 +136,14 @@ let sourceSampleRate = 48000;
 const TARGET_SR = 16000;
 let currentBuffer = [];
 let currentBufferSamples = 0;
+let bufferMaxLevel = 0;
 let processingQueue = [];
 let isProcessingQueue = false;
 let lastVoiceTime = 0;
 const SILENCE_THRESHOLD = 10;
+const SPEECH_LEVEL_THRESHOLD = 20;
 const SILENCE_HOLD_MS = 700;
-const MIN_CHUNK_SAMPLES = TARGET_SR * 1;
+const MIN_CHUNK_SAMPLES = TARGET_SR * 1.5;
 const MAX_CHUNK_SAMPLES = TARGET_SR * 12;
 
 function log(msg){
@@ -215,8 +217,14 @@ function appendFinal(text){
 function flushChunk(){
   if (currentBufferSamples === 0) return;
   const chunk = mergeBuffers(currentBuffer, currentBufferSamples);
+  const hadSpeechLevel = bufferMaxLevel;
   currentBuffer = [];
   currentBufferSamples = 0;
+  bufferMaxLevel = 0;
+  if (hadSpeechLevel < SPEECH_LEVEL_THRESHOLD){
+    log('discarded near-silent chunk (' + (chunk.length/TARGET_SR).toFixed(1) + 's, level=' + hadSpeechLevel.toFixed(1) + ')');
+    return;
+  }
   processingQueue.push(chunk);
   log('chunk queued (' + (chunk.length / TARGET_SR).toFixed(1) + 's), queue=' + processingQueue.length);
   processQueue();
@@ -233,13 +241,16 @@ async function processQueue(){
       if (currentLang !== 'auto') options.language = currentLang;
       const result = await transcriber(chunk, options);
       const text = (result && result.text) ? result.text.trim() : '';
-      if (text){
+      const strippedOfBrackets = text.replace(/[\(\[][^\)\]]*[\)\]]/g, '').trim();
+      if (text && strippedOfBrackets === ''){
+        log('discarded non-speech artifact: "' + text + '"');
+      } else if (text){
         appendFinal(text);
         chunkCount++;
         chunkCountEl.textContent = chunkCount;
         lastResultTimeEl.textContent = new Date().toLocaleTimeString('ja-JP', {hour12:false});
+        log('transcribed: "' + text.slice(0,30) + (text.length>30?'…':'') + '"');
       }
-      log('transcribed: "' + text.slice(0,30) + (text.length>30?'…':'') + '"');
     } catch(err){
       log('transcribe error: ' + err.message);
     }
@@ -307,6 +318,7 @@ async function startCapture(){
     for (let i=0;i<data.length;i++) sum += data[i];
     const avg = sum / data.length;
     meterEl.style.width = Math.min(100, avg*1.6) + '%';
+    if (avg > bufferMaxLevel) bufferMaxLevel = avg;
 
     const now = performance.now();
     if (avg > SILENCE_THRESHOLD) lastVoiceTime = now;
@@ -343,8 +355,8 @@ startBtn.addEventListener('click', async function(){
   }, 1000);
 
   try{
-    if (!modelLoaded) await loadModel();
     await requestWakeLock();
+    if (!modelLoaded) await loadModel();
     await startCapture();
     stateText.textContent = '認識中（待機）';
     log('capture started');
